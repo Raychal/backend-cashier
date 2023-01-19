@@ -1,5 +1,49 @@
 import user from '../models/User.js';
 import bcrypt from 'bcrypt';
+import jsonwebtoken from 'jsonwebtoken';
+import dotenv from 'dotenv';
+import User from '../models/User.js';
+import e from 'express';
+const env = dotenv.config().parsed;
+
+const generateAccessToken = async (payload) => {
+    return jsonwebtoken.sign(
+        payload,
+        env.JWT_ACCESS_TOKEN_SECRET,
+        { expiresIn: env.JWT_ACCESS_TOKEN_LIFE },
+    );
+}
+
+const generateRefreshToken = async (payload) => {
+    return jsonwebtoken.sign(
+        payload,
+        env.JWT_REFRESH_TOKEN_SECRET,
+        { expiresIn: env.JWT_REFRESH_TOKEN_LIFE },
+    );
+}
+
+const isEmailExist = async (email) => {
+    const User = await user.findOne({ email });
+    if(!User) { return false }
+    return true
+}
+
+const checkEmail = async (req, res) => {
+    try {
+        const email = await isEmailExist(req.body.email);
+        if (email) { throw { code: 409, message: "EMAIL_EXIST" } }
+
+        res.status(200).json({
+            status: true,
+            message: "EMAIL_NOT_EXIST"
+        });
+    } catch (err) {
+        res.status(err.code).json({
+            status: false,
+            message: err.message
+        });
+    }
+}
 
 const register = async (req, res) => {
     try {
@@ -9,10 +53,10 @@ const register = async (req, res) => {
         if (!req.body.password) { throw { code: 428, message: "Password is required" } }
 
         if (req.body.password !== req.body.retype_password) {
-            throw { code: 428, message: "PASSWORD_MUST_MATCH" }
+            throw { code: 428, message: "PASSWORD_NOT_MATCH" }
         }
 
-        const email = await user.findOne({ email: req.body.email });
+        const email = await isEmailExist(req.body.email);
         if (email) { throw { code: 409, message: "EMAIL_EXIST" } }
 
         // code 409 untuk status conflict
@@ -24,7 +68,6 @@ const register = async (req, res) => {
             fullname: req.body.fullname,
             email: req.body.email,
             password: hash,
-            role: req.body.role,
         });
         const User = await newUser.save();
 
@@ -57,15 +100,22 @@ const login = async (req, res) => {
         if (!req.body.password) { throw { code: 428, message: "Password is required" } }
 
         const User = await user.findOne({ email: req.body.email });
-        if(!User) { throw { code: 404, message: "EMAIL_NOT_FOUND" } }
+        if(!User) { throw { code: 403, message: "EMAIL_NOT_FOUND" } }
         
         const isMatch = await bcrypt.compareSync(req.body.password, User.password);
-        if(!isMatch) { throw { code: 428, message: "PASSWORD_WRONG" } }
+        if(!isMatch) { throw { code: 403, message: "WRONG_PASSWORD" } }
+
+        // generate token
+        const payload = { id: User._id, role: User.role }
+        const accessToken = await generateAccessToken(payload)
+        const refreshToken = await generateRefreshToken(payload)
         
         return res.status(200).json({
             status: true,
-            message: "USER_LOGIN_SUCCESS",
-            User
+            message: "LOGIN_SUCCESS",
+            fullname: User.fullname,
+            accessToken,
+            refreshToken
         });
 
     } catch (err) {
@@ -77,4 +127,33 @@ const login = async (req, res) => {
     }
 }
 
-export { register, login }
+const refreshToken = async (req, res) => {
+    try {
+
+        if (!req.body.refreshToken) { throw { code: 428, message: "Refresh token is required" } }
+
+        // verify token
+        const verify = await jsonwebtoken.verify(req.body.refreshToken, env.JWT_REFRESH_TOKEN_SECRET);
+        if (!verify) { throw { code: 401, message: "REFRESH_TOKEN_INVALID" } }
+
+        const payload = { id: verify._id, role: verify.role }
+        const accessToken = await generateAccessToken(payload)
+        const refreshToken = await generateRefreshToken(payload)
+        
+        return res.status(200).json({
+            status: true,
+            message: "REFRESH_TOKEN_SUCCESS",
+            accessToken,
+            refreshToken
+        });
+
+    } catch (err) {
+        if(!err.code) { err.code = 500 }
+        return res.status(err.code).json({
+            status: false,
+            message: err.message
+        });
+    }
+}
+
+export { register, login, refreshToken, checkEmail }
